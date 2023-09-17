@@ -2,7 +2,10 @@ use std::{
     collections::HashMap,
     io::{Read, Write},
     net::TcpListener,
-    sync::{mpsc, Arc, Mutex, MutexGuard, PoisonError},
+    sync::{
+        mpsc::{self, RecvError},
+        Arc, Mutex, MutexGuard, PoisonError,
+    },
 };
 
 use pdtcore::MessageProtocol;
@@ -23,8 +26,44 @@ type SharedServerReceiver = Shared<ServerReceiver>;
 #[derive(Debug)]
 pub enum SendError {
     ClientNotFound,
-    SendChannelError,
+    SendChannel,
     Deadlock,
+}
+
+#[derive(Debug)]
+pub enum HandleError {
+    Deadlock,
+    ReceiveChannel,
+}
+
+#[derive(Debug)]
+pub enum ReceiveError {
+    Deadlock,
+    ChannelSend,
+}
+
+impl<T> From<PoisonError<T>> for HandleError {
+    fn from(_: PoisonError<T>) -> Self {
+        HandleError::Deadlock
+    }
+}
+
+impl From<RecvError> for HandleError {
+    fn from(_value: RecvError) -> Self {
+        HandleError::ReceiveChannel
+    }
+}
+
+impl<T> From<PoisonError<T>> for ReceiveError {
+    fn from(_: PoisonError<T>) -> Self {
+        ReceiveError::Deadlock
+    }
+}
+
+impl<T> From<mpsc::SendError<T>> for ReceiveError {
+    fn from(_value: mpsc::SendError<T>) -> Self {
+        ReceiveError::ChannelSend
+    }
 }
 
 #[derive(Debug)]
@@ -53,8 +92,9 @@ impl Server {
     }
 
     #[instrument(skip(receiver))]
-    pub fn handle_message(receiver: SharedServerReceiver) {
-        let event = receiver.lock().unwrap().recv().unwrap();
+    pub fn handle_message(receiver: SharedServerReceiver) -> Result<(), HandleError> {
+        let receiver = receiver.lock()?;
+        let event = receiver.recv()?;
 
         info!(event = ?event, "handling event");
 
@@ -62,10 +102,16 @@ impl Server {
             ServerEvent::Incoming((id, message)) => info!(id = ?id, message = ?message, "handled"),
             ServerEvent::Unexpected(error) => error!(error = ?error),
         }
+
+        Ok(())
     }
 
     #[instrument(skip(read))]
-    fn handle_client_incoming_messages(id: Ulid, read: &mut dyn Read, sender: SharedServerSender) {
+    fn handle_client_incoming_messages(
+        id: Ulid,
+        read: &mut dyn Read,
+        sender: SharedServerSender,
+    ) -> Result<(), ReceiveError> {
         let mut ended = false;
 
         while !ended {
@@ -84,12 +130,14 @@ impl Server {
                 }
             };
 
-            let mut guard = sender.lock().unwrap();
+            let mut guard = sender.lock()?;
 
             let sender = &mut *guard;
 
-            sender.send(event).unwrap();
+            sender.send(event)?;
         }
+
+        Ok(())
     }
 
     fn handle_client_outgoing_messages(id: Ulid, write: &mut dyn Write, receiver: ClientReceiver) {
@@ -129,7 +177,12 @@ impl Server {
         let client_ids = self.client_ids.clone();
 
         std::thread::spawn(move || loop {
-            Server::handle_message(incoming_message_receiver.clone())
+            match Server::handle_message(incoming_message_receiver.clone()) {
+                Ok(_) => {}
+                Err(error) => {
+                    error!(error =? error, "handle message")
+                }
+            }
         });
 
         std::thread::spawn(move || {
@@ -153,8 +206,6 @@ impl Server {
 
                     client_ids.push(id);
                 }
-
-                //let write_copy = stream.try_clone().unwrap();
 
                 let sender = incoming_message_sender.clone();
                 let (tx, rx) = mpsc::channel();
@@ -206,7 +257,7 @@ impl Server {
         };
 
         let Ok(_) = sender.send(message) else {
-            return Err(SendError::SendChannelError);
+            return Err(SendError::SendChannel);
         };
 
         Ok(())

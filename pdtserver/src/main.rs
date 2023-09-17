@@ -37,6 +37,14 @@ enum AppError {
     ServerSend(SendError),
 }
 
+#[derive(Debug)]
+enum StartupError {
+    Tracing,
+    TcpBindAddress(std::io::Error),
+    Mutex,
+    AxumServe,
+}
+
 impl<T> From<PoisonError<T>> for AppError {
     fn from(_value: PoisonError<T>) -> Self {
         AppError::Deadlock
@@ -119,7 +127,7 @@ async fn screen_off(
     }
 }
 
-fn setup_tracing() -> Result<(), ()> {
+fn setup_tracing() -> Result<(), StartupError> {
     let layer = tracing_logfmt::builder().with_target(false).layer();
 
     let filter = match EnvFilter::try_from_default_env() {
@@ -127,19 +135,18 @@ fn setup_tracing() -> Result<(), ()> {
         _ => EnvFilter::builder()
             .with_default_directive(LevelFilter::INFO.into())
             .parse("")
-            .unwrap(),
+            .map_err(|_| StartupError::Tracing)?,
     };
 
     let subscriber = Registry::default().with(layer).with(filter);
-    tracing::subscriber::set_global_default(subscriber).unwrap();
+    tracing::subscriber::set_global_default(subscriber).map_err(|_| StartupError::Tracing)?;
 
     Ok(())
 }
 
 #[tokio::main]
-async fn main() {
-    trace!("setup tracing");
-    setup_tracing().unwrap();
+async fn main() -> Result<(), StartupError> {
+    setup_tracing()?;
 
     let server = Server::new();
     let shared_server = Arc::new(Mutex::new(server));
@@ -156,11 +163,12 @@ async fn main() {
     let web_address = SocketAddr::from(([127, 0, 0, 1], 2040));
     let server_address = SocketAddr::from(([127, 0, 0, 1], 2039));
 
-    let tcp_server_listener = TcpListener::bind(server_address).unwrap();
+    let tcp_server_listener =
+        TcpListener::bind(server_address).map_err(StartupError::TcpBindAddress)?;
 
     {
         info!("getting server lock");
-        let mut guard = shared_server.lock().unwrap();
+        let mut guard = shared_server.lock().map_err(|_| StartupError::Mutex)?;
 
         let server = &mut *guard;
         info!(bound = ?server_address, "running server");
@@ -168,12 +176,10 @@ async fn main() {
         info!("release server lock");
     }
 
-    //let tcp_server_thread = thread::spawn(move || state.lock().unwrap().tcp_server.serve());
-
     axum::Server::bind(&web_address)
         .serve(web.into_make_service())
         .await
-        .unwrap();
+        .map_err(|_| StartupError::AxumServe)?;
 
-    //let _ = tcp_server_thread.join().unwrap();
+    Ok(())
 }
