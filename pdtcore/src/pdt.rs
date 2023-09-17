@@ -35,7 +35,7 @@ pub struct ServerInfo {
 }
 
 impl ServerInfo {
-    fn new(name: String) -> Self {
+    pub fn new(name: String) -> Self {
         Self {
             name,
             up_since: Utc::now(),

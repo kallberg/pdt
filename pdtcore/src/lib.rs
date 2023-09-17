@@ -6,12 +6,12 @@ use bincode::{
 };
 use std::io::{BufReader, Read, Write};
 
-#[derive(Encode, Decode, Debug, Clone)]
+#[derive(Encode, Decode, Debug, Clone, PartialEq, Eq)]
 pub struct DeviceInfo {
     pub name: String,
 }
 
-#[derive(Encode, Decode, Debug)]
+#[derive(Encode, Decode, Debug, PartialEq, Eq)]
 pub enum Message {
     DeviceInfo(DeviceInfo),
     ScreenOff,
