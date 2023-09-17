@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset='utf-8'>
+  <meta http-equiv='X-UA-Compatible' content='IE=edge'>
+  <title>PDT</title>
+  <meta name='viewport' content='width=device-width, initial-scale=1'>
+</head>
+
+<body>
+
+</body>
+<h1>PDT</h1>
+
+<ul>
+  {% for device in device_names %}
+  <li>{{ device }}</li>
+  {% endfor %}
+</ul>
+
+<form method="post" target="/screen-off">
+  <input type="submit" value="Screen off">
+</form>
+
+</html>

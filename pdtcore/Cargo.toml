@@ -1,0 +1,10 @@
+[package]
+name = "pdtcore"
+version = "0.0.1"
+authors = ["Erik Källberg"]
+edition = "2021"
+
+[dependencies]
+bincode = "2.0.0-rc.3"
+chrono = "0.4.31"
+ulid = "1.1.0"
