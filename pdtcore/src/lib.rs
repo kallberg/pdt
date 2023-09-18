@@ -15,6 +15,8 @@ pub struct DeviceInfo {
 pub enum Message {
     DeviceInfo(DeviceInfo),
     ScreenOff,
+    Poweroff,
+    Restart,
     End,
 }
 

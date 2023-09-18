@@ -1,5 +1,6 @@
 use std::{
     net::{SocketAddr, TcpListener},
+    str::FromStr,
     sync::{Arc, Mutex, PoisonError},
 };
 
@@ -22,6 +23,46 @@ use ulid::Ulid;
 
 type ServerReference = Arc<Mutex<Server>>;
 type AppStateReference = Arc<Mutex<AppState>>;
+
+struct Config {
+    server_address: SocketAddr,
+    web_interface_address: SocketAddr,
+}
+
+impl Config {
+    fn with_env(self) -> Self {
+        use std::env;
+
+        let configure = |config: Result<String, env::VarError>, default: SocketAddr| {
+            config
+                .map(|string| SocketAddr::from_str(&string).ok())
+                .ok()
+                .flatten()
+                .unwrap_or(default)
+        };
+
+        let server_address = configure(env::var("SERVER_ADDRESS"), self.server_address);
+
+        let web_interface_address = configure(
+            env::var("WEB_INTERFACE_ADDRESS"),
+            self.web_interface_address,
+        );
+
+        Self {
+            server_address,
+            web_interface_address,
+        }
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            server_address: SocketAddr::from(([0, 0, 0, 0], 2039)),
+            web_interface_address: SocketAddr::from(([0, 0, 0, 0], 2040)),
+        }
+    }
+}
 
 impl AppState {
     fn reference(server_reference: ServerReference) -> AppStateReference {
@@ -154,9 +195,10 @@ fn setup_tracing() -> Result<(), StartupError> {
     Ok(())
 }
 
-async fn serve_web_interface(server_reference: ServerReference) -> Result<(), StartupError> {
-    let web_address = SocketAddr::from(([0, 0, 0, 0], 2040));
-
+async fn serve_web_interface(
+    server_reference: ServerReference,
+    web_interface_address: SocketAddr,
+) -> Result<(), StartupError> {
     let state = AppState::reference(server_reference);
 
     let web = Router::new()
@@ -164,7 +206,8 @@ async fn serve_web_interface(server_reference: ServerReference) -> Result<(), St
         .route("/screen-off/:client_id", routing::get(screen_off))
         .with_state(state.clone());
 
-    axum::Server::bind(&web_address)
+    info!(address =? web_interface_address, "starting web interface server");
+    axum::Server::bind(&web_interface_address)
         .serve(web.into_make_service())
         .await
         .map_err(|_| StartupError::AxumServe)?;
@@ -172,16 +215,17 @@ async fn serve_web_interface(server_reference: ServerReference) -> Result<(), St
     Ok(())
 }
 
-fn spawn_tcp_server(server_reference: ServerReference) -> Result<(), StartupError> {
-    let server_address = SocketAddr::from(([127, 0, 0, 1], 2039));
-
+fn spawn_tcp_server(
+    server_reference: ServerReference,
+    server_address: SocketAddr,
+) -> Result<(), StartupError> {
     let tcp_server_listener =
         TcpListener::bind(server_address).map_err(StartupError::TcpBindAddress)?;
 
     let mut guard = server_reference.lock().map_err(|_| StartupError::Mutex)?;
     let server = &mut *guard;
 
-    info!(bound = ?server_address, "running server");
+    info!(address = ?server_address, "starting pdt server");
     server.run(tcp_server_listener);
 
     Ok(())
@@ -191,9 +235,11 @@ fn spawn_tcp_server(server_reference: ServerReference) -> Result<(), StartupErro
 async fn main() -> Result<(), StartupError> {
     setup_tracing()?;
 
+    let config = Config::default().with_env();
     let server = Server::default();
+
     let server_reference = ServerReference::from(server);
 
-    spawn_tcp_server(server_reference.clone())?;
-    serve_web_interface(server_reference).await
+    spawn_tcp_server(server_reference.clone(), config.server_address)?;
+    serve_web_interface(server_reference, config.web_interface_address).await
 }
