@@ -8,9 +8,10 @@ use axum::{
     debug_handler,
     extract::{Path, State},
     http::StatusCode,
-    response::{Html, IntoResponse},
+    response::IntoResponse,
     routing, Router,
 };
+
 use pdtcore::*;
 mod server;
 
@@ -19,21 +20,37 @@ use tracing::{metadata::LevelFilter, *};
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
 use ulid::Ulid;
 
+type ServerReference = Arc<Mutex<Server>>;
+type AppStateReference = Arc<Mutex<AppState>>;
+
+impl AppState {
+    fn reference(server_reference: ServerReference) -> AppStateReference {
+        Arc::new(Mutex::new(Self {
+            server: server_reference,
+        }))
+    }
+}
+
+impl From<Server> for ServerReference {
+    fn from(value: Server) -> Self {
+        Arc::new(Mutex::new(value))
+    }
+}
+
 struct AppState {
-    server: Arc<Mutex<Server>>,
+    server: ServerReference,
 }
 
 #[derive(Template)]
 #[template(path = "index.html")]
 struct IndexTemplate {
+    style: String,
+    script: String,
     device_names: Vec<String>,
 }
 
-type SharedAppState = Arc<Mutex<AppState>>;
-
 enum AppError {
     Deadlock,
-    Template,
     ServerSend(SendError),
 }
 
@@ -70,19 +87,15 @@ impl IntoResponse for AppError {
                     format!("Unexpected error\n\nerror={:?}", error),
                 )
             }
-            AppError::Template => {
-                error!("template error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Unexpected error".to_string(),
-                )
-            }
         }
         .into_response()
     }
 }
 
-async fn index(State(state): State<SharedAppState>) -> Result<Html<String>, AppError> {
+async fn index(State(state): State<AppStateReference>) -> Result<IndexTemplate, AppError> {
+    static STYLE: &str = include_str!("../static/style.min.css");
+    static SCRIPT: &str = include_str!("../static/vendored/htmx.min.js");
+
     let app_state_guard = state.lock()?;
     let app_state = &*app_state_guard;
 
@@ -98,20 +111,17 @@ async fn index(State(state): State<SharedAppState>) -> Result<Html<String>, AppE
 
     let template = IndexTemplate {
         device_names: client_ids,
+        style: STYLE.into(),
+        script: SCRIPT.into(),
     };
 
-    let template_str = template
-        .render()
-        .map_err(|_| AppError::Template)?
-        .to_string();
-
-    Ok(Html(template_str))
+    Ok(template)
 }
 
 #[debug_handler]
 async fn screen_off(
     Path(client_id): Path<Ulid>,
-    State(state): State<SharedAppState>,
+    State(state): State<AppStateReference>,
 ) -> Result<String, AppError> {
     let state_guard = state.lock()?;
 
@@ -144,37 +154,15 @@ fn setup_tracing() -> Result<(), StartupError> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<(), StartupError> {
-    setup_tracing()?;
+async fn serve_web_interface(server_reference: ServerReference) -> Result<(), StartupError> {
+    let web_address = SocketAddr::from(([0, 0, 0, 0], 2040));
 
-    let server = Server::new();
-    let shared_server = Arc::new(Mutex::new(server));
-
-    let state = Arc::new(Mutex::new(AppState {
-        server: shared_server.clone(),
-    }));
+    let state = AppState::reference(server_reference);
 
     let web = Router::new()
         .route("/", routing::get(index))
         .route("/screen-off/:client_id", routing::get(screen_off))
         .with_state(state.clone());
-
-    let web_address = SocketAddr::from(([127, 0, 0, 1], 2040));
-    let server_address = SocketAddr::from(([127, 0, 0, 1], 2039));
-
-    let tcp_server_listener =
-        TcpListener::bind(server_address).map_err(StartupError::TcpBindAddress)?;
-
-    {
-        info!("getting server lock");
-        let mut guard = shared_server.lock().map_err(|_| StartupError::Mutex)?;
-
-        let server = &mut *guard;
-        info!(bound = ?server_address, "running server");
-        server.run(tcp_server_listener);
-        info!("release server lock");
-    }
 
     axum::Server::bind(&web_address)
         .serve(web.into_make_service())
@@ -182,4 +170,30 @@ async fn main() -> Result<(), StartupError> {
         .map_err(|_| StartupError::AxumServe)?;
 
     Ok(())
+}
+
+fn spawn_tcp_server(server_reference: ServerReference) -> Result<(), StartupError> {
+    let server_address = SocketAddr::from(([127, 0, 0, 1], 2039));
+
+    let tcp_server_listener =
+        TcpListener::bind(server_address).map_err(StartupError::TcpBindAddress)?;
+
+    let mut guard = server_reference.lock().map_err(|_| StartupError::Mutex)?;
+    let server = &mut *guard;
+
+    info!(bound = ?server_address, "running server");
+    server.run(tcp_server_listener);
+
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), StartupError> {
+    setup_tracing()?;
+
+    let server = Server::default();
+    let server_reference = ServerReference::from(server);
+
+    spawn_tcp_server(server_reference.clone())?;
+    serve_web_interface(server_reference).await
 }

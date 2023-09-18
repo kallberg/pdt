@@ -1,0 +1,61 @@
+:root {
+  --background: #24283b;
+  --foreground: #c0caf5;
+  --color0: #1d202f;
+  --color1: #f7768e;
+  --color2: #9ece6a;
+  --color3: #e0af68;
+  --color4: #7aa2f7;
+  --color5: #bb9af7;
+  --color6: #7dcfff;
+  --color7: #a9b1d6;
+  --color8: #414868;
+  --color9: #f7768e;
+  --color10: #9ece6a;
+  --color11: #e0af68;
+  --color12: #7aa2f7;
+  --color13: #bb9af7;
+  --color14: #7dcfff;
+  --color15: #c0caf5;
+  --serif: "Times New Roman", Times, serif;
+  --sans-serif: Arial, Helvetica, sans-serif;
+  --monospace: "Courier New", Courier, monospace;
+  --cursive: "Brush Script MT", cursive;
+  --fantasy: fantasy;
+}
+
+body {
+  background-color: var(--background);
+  color-scheme: dark;
+  color: var(--foreground);
+  font-family: var(--sans-serif);
+  width: 100%;
+  overflow-x: hidden;
+}
+
+#content {
+  display: flex;
+  flex-direction: column;
+  justify-self: center;
+  max-width: 100%;
+  overflow-x: hidden;
+  padding: 20px
+}
+
+main {
+  display: grid;
+  justify-content: start;
+  gap: 10px;
+  width: 100%;
+  grid-template-columns: repeat(auto-fill, minmax(300px, min-content));
+}
+
+.device {
+  display: flex;
+  flex-direction: column;
+  max-width: 300px;
+  border-radius: 2px;
+  border-color: var(--color13);
+  border-style: solid;
+  padding: 10px;
+}

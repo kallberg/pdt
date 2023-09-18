@@ -14,14 +14,14 @@ use tracing::*;
 
 use ulid::Ulid;
 
-type Shared<T> = Arc<Mutex<T>>;
+type Reference<T> = Arc<Mutex<T>>;
 type AddressedMessage = (Ulid, Message);
 type ClientSender = mpsc::Sender<Message>;
 type ClientReceiver = mpsc::Receiver<Message>;
 type ServerSender = mpsc::Sender<ServerEvent>;
 type ServerReceiver = mpsc::Receiver<ServerEvent>;
-type SharedServerSender = Shared<ServerSender>;
-type SharedServerReceiver = Shared<ServerReceiver>;
+type ServerSenderReference = Reference<ServerSender>;
+type ServerReceiverReference = Reference<ServerReceiver>;
 
 #[derive(Debug)]
 pub enum SendError {
@@ -73,14 +73,14 @@ pub enum ServerEvent {
 }
 
 pub struct Server {
-    incoming_server_event_sender: SharedServerSender,
-    incoming_server_event_receiver: SharedServerReceiver,
-    outgoing_message_senders: Shared<HashMap<Ulid, ClientSender>>,
-    client_ids: Shared<Vec<Ulid>>,
+    incoming_server_event_sender: ServerSenderReference,
+    incoming_server_event_receiver: ServerReceiverReference,
+    outgoing_message_senders: Reference<HashMap<Ulid, ClientSender>>,
+    client_ids: Reference<Vec<Ulid>>,
 }
 
-impl Server {
-    pub fn new() -> Self {
+impl Default for Server {
+    fn default() -> Self {
         let (tx, rx) = mpsc::channel();
 
         Self {
@@ -90,9 +90,11 @@ impl Server {
             client_ids: Arc::new(Mutex::new(vec![])),
         }
     }
+}
 
+impl Server {
     #[instrument(skip(receiver))]
-    pub fn handle_message(receiver: SharedServerReceiver) -> Result<(), HandleError> {
+    pub fn handle_message(receiver: ServerReceiverReference) -> Result<(), HandleError> {
         let receiver = receiver.lock()?;
         let event = receiver.recv()?;
 
@@ -110,7 +112,7 @@ impl Server {
     fn handle_client_incoming_messages(
         id: Ulid,
         read: &mut dyn Read,
-        sender: SharedServerSender,
+        sender: ServerSenderReference,
     ) -> Result<(), ReceiveError> {
         let mut ended = false;
 

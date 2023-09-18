@@ -1,0 +1,9 @@
+<div class="device">
+  <h3>
+    Device
+  </h3>
+  <p>id: {{ device }}</p>
+
+  <button hx-get="/screen-off/{{ device }}" hx-target="#status-{{ device }}">screen off</button>
+  <div id="status-{{ device }}"></div>
+</div>
