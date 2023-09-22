@@ -8,20 +8,19 @@ use std::{
     },
 };
 
-use pdtcore::MessageProtocol;
-use pdtcore::{Message, MessageProtocolError};
+use pdtcore::{CommonMessage, Particularity, Protocol};
+use pdtcore::{Message, ProtocolError};
 use tracing::*;
 
 use ulid::Ulid;
 
-type Reference<T> = Arc<Mutex<T>>;
 type AddressedMessage = (Ulid, Message);
 type ClientSender = mpsc::Sender<Message>;
 type ClientReceiver = mpsc::Receiver<Message>;
 type ServerSender = mpsc::Sender<ServerEvent>;
 type ServerReceiver = mpsc::Receiver<ServerEvent>;
-type ServerSenderReference = Reference<ServerSender>;
-type ServerReceiverReference = Reference<ServerReceiver>;
+type ServerSenderReference = Particularity<ServerSender>;
+type ServerReceiverReference = Particularity<ServerReceiver>;
 
 #[derive(Debug)]
 pub enum SendError {
@@ -69,14 +68,14 @@ impl<T> From<mpsc::SendError<T>> for ReceiveError {
 #[derive(Debug)]
 pub enum ServerEvent {
     Incoming(AddressedMessage),
-    Unexpected(MessageProtocolError),
+    Unexpected(ProtocolError),
 }
 
 pub struct Server {
     incoming_server_event_sender: ServerSenderReference,
     incoming_server_event_receiver: ServerReceiverReference,
-    outgoing_message_senders: Reference<HashMap<Ulid, ClientSender>>,
-    client_ids: Reference<Vec<Ulid>>,
+    outgoing_message_senders: Particularity<HashMap<Ulid, ClientSender>>,
+    client_ids: Particularity<Vec<Ulid>>,
 }
 
 impl Default for Server {
@@ -121,7 +120,7 @@ impl Server {
 
             let event = match receive_result {
                 Ok(message) => {
-                    if message == Message::End {
+                    if message == Message::from(CommonMessage::End) {
                         ended = true;
                     }
                     ServerEvent::Incoming((id, message))
@@ -154,7 +153,7 @@ impl Server {
                 Err(error) => {
                     error!(error =? error, client_id =? id, "receiving from outgoing client channel, will use end message");
                     ended = true;
-                    Message::End
+                    CommonMessage::End.into()
                 }
             };
 

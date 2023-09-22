@@ -6,7 +6,6 @@ use std::{
 
 use askama::Template;
 use axum::{
-    debug_handler,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
@@ -159,7 +158,6 @@ async fn index(State(state): State<AppStateReference>) -> Result<IndexTemplate, 
     Ok(template)
 }
 
-#[debug_handler]
 async fn screen_off(
     Path(client_id): Path<Ulid>,
     State(state): State<AppStateReference>,
@@ -172,7 +170,7 @@ async fn screen_off(
 
     let server = &mut *server_guard;
 
-    match server.send(client_id, Message::ScreenOff) {
+    match server.send(client_id, Message::Client(ClientMessage::ScreenOff)) {
         Ok(_) => Ok("OK".to_string()),
         Err(error) => Err(AppError::ServerSend(error)),
     }
