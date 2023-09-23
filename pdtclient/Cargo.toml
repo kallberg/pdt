@@ -6,4 +6,6 @@ edition = "2021"
 
 [dependencies]
 pdtcore = { path = "../pdtcore" }
-signal-hook = "0.3.17"
+tracing = "0.1.37"
+tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
+tracing-logfmt = { version = "0.3.3", features = ["ansi_logs"] }
