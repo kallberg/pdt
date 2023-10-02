@@ -2,8 +2,12 @@
   <h3>
     Device
   </h3>
-  <p>id: {{ device }}</p>
-
-  <button hx-get="/screen-off/{{ device }}" hx-target="#status-{{ device }}">screen off</button>
-  <div id="status-{{ device }}"></div>
+  <span class="comment">{{ client.id }}</span>
+  <span>name: {{ device.name }}</span>
+  <span>os: {{ device.os }}</span>
+  <span>os version: {{ device.os_version }}</span>
+  <span>uptime: {{ device.uptime }}</span>
+  <button hx-get="/screen-off/{{ client.id }}" hx-target="#status-{{ client.id }}">screen off</button>
+  <button hx-get="/screen-on/{{ client.id }}" hx-target="#status-{{ client.id }}">screen on</button>
+  <div id="status-{{ client.id }}"></div>
 </div>

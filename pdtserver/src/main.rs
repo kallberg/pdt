@@ -20,8 +20,8 @@ use tracing::{metadata::LevelFilter, *};
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
 use ulid::Ulid;
 
-type ServerReference = Arc<Mutex<Server>>;
-type AppStateReference = Arc<Mutex<AppState>>;
+type ServerReference = Particularity<Server>;
+type AppStateReference = Particularity<AppState>;
 
 struct Config {
     server_address: SocketAddr,
@@ -86,7 +86,7 @@ struct AppState {
 struct IndexTemplate {
     style: String,
     script: String,
-    device_names: Vec<String>,
+    clients: Vec<Client>,
 }
 
 enum AppError {
@@ -143,14 +143,10 @@ async fn index(State(state): State<AppStateReference>) -> Result<IndexTemplate, 
 
     let server = &*server_guard;
 
-    let client_ids = server
-        .get_client_ids()?
-        .into_iter()
-        .map(String::from)
-        .collect();
+    let clients = server.get_clients();
 
     let template = IndexTemplate {
-        device_names: client_ids,
+        clients,
         style: STYLE.into(),
         script: SCRIPT.into(),
     };
@@ -171,6 +167,24 @@ async fn screen_off(
     let server = &mut *server_guard;
 
     match server.send(client_id, Message::Client(ClientMessage::ScreenOff)) {
+        Ok(_) => Ok("OK".to_string()),
+        Err(error) => Err(AppError::ServerSend(error)),
+    }
+}
+
+async fn screen_on(
+    Path(client_id): Path<Ulid>,
+    State(state): State<AppStateReference>,
+) -> Result<String, AppError> {
+    let state_guard = state.lock()?;
+
+    let state = &*state_guard;
+
+    let mut server_guard = state.server.lock()?;
+
+    let server = &mut *server_guard;
+
+    match server.send(client_id, Message::Client(ClientMessage::ScreenOn)) {
         Ok(_) => Ok("OK".to_string()),
         Err(error) => Err(AppError::ServerSend(error)),
     }
@@ -202,6 +216,7 @@ async fn serve_web_interface(
     let web = Router::new()
         .route("/", routing::get(index))
         .route("/screen-off/:client_id", routing::get(screen_off))
+        .route("/screen-on/:client_id", routing::get(screen_on))
         .with_state(state.clone());
 
     info!(address =? web_interface_address, "starting web interface server");

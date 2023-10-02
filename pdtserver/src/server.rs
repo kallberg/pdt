@@ -8,8 +8,10 @@ use std::{
     },
 };
 
-use pdtcore::{CommonMessage, Particularity, Protocol};
-use pdtcore::{Message, ProtocolError};
+use pdtcore::{
+    BuiltInfo, Client, ClientMessage, DeviceInfo, Message, ProtocolError, ServerMessage,
+};
+use pdtcore::{Particularity, Protocol};
 use tracing::*;
 
 use ulid::Ulid;
@@ -21,6 +23,7 @@ type ServerSender = mpsc::Sender<ServerEvent>;
 type ServerReceiver = mpsc::Receiver<ServerEvent>;
 type ServerSenderReference = Particularity<ServerSender>;
 type ServerReceiverReference = Particularity<ServerReceiver>;
+type ServerClientMap = Particularity<HashMap<Ulid, ServerClient>>;
 
 #[derive(Debug)]
 pub enum SendError {
@@ -67,14 +70,24 @@ impl<T> From<mpsc::SendError<T>> for ReceiveError {
 
 #[derive(Debug)]
 pub enum ServerEvent {
-    Incoming(AddressedMessage),
+    IncomingMessage(AddressedMessage),
     Unexpected(ProtocolError),
 }
+
+#[derive(Debug, Clone)]
+pub struct ServerClient {
+    pub id: Ulid,
+    pub pdtcore_built_info: Option<BuiltInfo>,
+    device_info: Option<DeviceInfo>,
+    sender: ClientSender,
+}
+
+#[derive(Clone)]
 
 pub struct Server {
     incoming_server_event_sender: ServerSenderReference,
     incoming_server_event_receiver: ServerReceiverReference,
-    outgoing_message_senders: Particularity<HashMap<Ulid, ClientSender>>,
+    clients: ServerClientMap,
     client_ids: Particularity<Vec<Ulid>>,
 }
 
@@ -85,26 +98,54 @@ impl Default for Server {
         Self {
             incoming_server_event_sender: Arc::new(Mutex::new(tx)),
             incoming_server_event_receiver: Arc::new(Mutex::new(rx)),
-            outgoing_message_senders: Arc::new(Mutex::new(HashMap::new())),
+            clients: Arc::new(Mutex::new(HashMap::new())),
             client_ids: Arc::new(Mutex::new(vec![])),
         }
     }
 }
 
 impl Server {
-    #[instrument(skip(receiver))]
-    pub fn handle_message(receiver: ServerReceiverReference) -> Result<(), HandleError> {
-        let receiver = receiver.lock()?;
-        let event = receiver.recv()?;
+    #[instrument(skip_all)]
+    pub fn handle_messages(&self) -> Result<(), HandleError> {
+        loop {
+            let receiver = self.incoming_server_event_receiver.lock()?;
+            let event = receiver.recv()?;
 
-        info!(event = ?event, "handling event");
+            info!(event = ?event, "handling event");
 
-        match event {
-            ServerEvent::Incoming((id, message)) => info!(id = ?id, message = ?message, "handled"),
-            ServerEvent::Unexpected(error) => error!(error = ?error),
+            match event {
+                ServerEvent::IncomingMessage((id, message)) => match message {
+                    Message::Client(_) => unreachable!(),
+                    Message::Server(message) => match message {
+                        ServerMessage::Hello(introduction) => {
+                            let pdtcore_built_info = BuiltInfo::default();
+
+                            let mut client_guard = self.clients.lock().unwrap();
+                            let client = client_guard.get_mut(&id).unwrap();
+
+                            if !pdtcore_built_info.compatible(&introduction.pdtcore_built_info) {
+                                client.sender.send(ClientMessage::Goodbye.into()).unwrap();
+                            }
+
+                            client.pdtcore_built_info = Some(introduction.pdtcore_built_info);
+
+                            client
+                                .sender
+                                .send(ClientMessage::RequestDeviceInfo.into())
+                                .unwrap();
+                        }
+                        ServerMessage::Goodbye => todo!(),
+                        ServerMessage::DeviceInfo(info) => {
+                            let mut client_guard = self.clients.lock().unwrap();
+                            let client = client_guard.get_mut(&id).unwrap();
+
+                            client.device_info = Some(info);
+                        }
+                    },
+                },
+                ServerEvent::Unexpected(error) => error!(error = ?error),
+            }
         }
-
-        Ok(())
     }
 
     #[instrument(skip(read))]
@@ -120,10 +161,10 @@ impl Server {
 
             let event = match receive_result {
                 Ok(message) => {
-                    if message == Message::from(CommonMessage::End) {
+                    if message == Message::from(ServerMessage::Goodbye) {
                         ended = true;
                     }
-                    ServerEvent::Incoming((id, message))
+                    ServerEvent::IncomingMessage((id, message))
                 }
                 Err(error) => {
                     ended = true;
@@ -153,7 +194,7 @@ impl Server {
                 Err(error) => {
                     error!(error =? error, client_id =? id, "receiving from outgoing client channel, will use end message");
                     ended = true;
-                    CommonMessage::End.into()
+                    ClientMessage::Goodbye.into()
                 }
             };
 
@@ -173,18 +214,21 @@ impl Server {
 
     pub fn run(&mut self, tcp_listener: TcpListener) {
         let incoming_message_sender = self.incoming_server_event_sender.clone();
-        let incoming_message_receiver = self.incoming_server_event_receiver.clone();
-        let outgoing_message_senders = self.outgoing_message_senders.clone();
+        let outgoing_message_senders = self.clients.clone();
         let client_ids = self.client_ids.clone();
 
-        std::thread::spawn(move || loop {
-            match Server::handle_message(incoming_message_receiver.clone()) {
+        let handle_message_self = self.clone();
+
+        std::thread::spawn(
+            // TODO: figure out what to do if we stop handling messages due to errors
+            //       should we resume/retry? exit? drop associated client?
+            move || match handle_message_self.clone().handle_messages() {
                 Ok(_) => {}
                 Err(error) => {
                     error!(error =? error, "handle message")
                 }
-            }
-        });
+            },
+        );
 
         std::thread::spawn(move || {
             for mut stream in tcp_listener.incoming().flatten() {
@@ -211,23 +255,30 @@ impl Server {
                 let sender = incoming_message_sender.clone();
                 let (tx, rx) = mpsc::channel();
 
+                let client = ServerClient {
+                    id,
+                    pdtcore_built_info: None,
+                    sender: tx,
+                    device_info: None,
+                };
+
                 std::thread::spawn(move || {
                     Server::handle_client_incoming_messages(id, &mut stream, sender)
                 });
 
-                let outgoing_message_senders = outgoing_message_senders.clone();
+                let server_client_map = outgoing_message_senders.clone();
 
                 std::thread::spawn(move || {
                     {
-                        let mut guard = outgoing_message_senders.lock().unwrap();
+                        let mut guard = server_client_map.lock().unwrap();
 
-                        let senders = &mut *guard;
+                        let client_map = &mut *guard;
 
-                        senders.insert(id, tx);
+                        client_map.insert(id, client);
                     }
                     Server::handle_client_outgoing_messages(id, &mut write_stream, rx);
                     {
-                        let mut guard = outgoing_message_senders.lock().unwrap();
+                        let mut guard = server_client_map.lock().unwrap();
 
                         let senders = &mut *guard;
 
@@ -246,18 +297,32 @@ impl Server {
         Ok(client_ids.clone())
     }
 
+    pub fn get_clients(&self) -> Vec<Client> {
+        let client_guard = self.clients.lock().unwrap();
+        let mut output = vec![];
+
+        for (id, server_client) in client_guard.iter() {
+            output.push(Client {
+                id: id.to_string(),
+                device_info: server_client.clone().device_info.unwrap_or_default(),
+            })
+        }
+
+        output
+    }
+
     pub fn send(&mut self, to: Ulid, message: Message) -> Result<(), SendError> {
-        let Ok(mut senders_guard) = self.outgoing_message_senders.lock() else {
+        let Ok(mut clients_guard) = self.clients.lock() else {
             return Err(SendError::Deadlock);
         };
 
-        let senders = &mut *senders_guard;
+        let clients = &mut *clients_guard;
 
-        let Some(sender) = senders.get(&to) else {
+        let Some(client) = clients.get(&to) else {
             return Err(SendError::ClientNotFound);
         };
 
-        let Ok(_) = sender.send(message) else {
+        let Ok(_) = client.sender.send(message) else {
             return Err(SendError::SendChannel);
         };
 

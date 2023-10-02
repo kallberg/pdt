@@ -27,7 +27,7 @@
 body {
   background-color: var(--background);
   color-scheme: dark;
-  color: var(--foreground);
+  color: var(--color4);
   font-family: var(--sans-serif);
   width: 100%;
   overflow-x: hidden;
@@ -50,12 +50,19 @@ main {
   grid-template-columns: repeat(auto-fill, minmax(300px, min-content));
 }
 
+.comment {
+  color: var(--color8)
+}
+
 .device {
   display: flex;
   flex-direction: column;
   max-width: 300px;
   border-radius: 2px;
-  border-color: var(--color13);
+  border-color: var(--foreground);
   border-style: solid;
   padding: 10px;
+  text-wrap: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
 }

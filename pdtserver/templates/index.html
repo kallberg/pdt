@@ -9,8 +9,8 @@
       <h1>PDT</h1>
     </header>
     <main>
-      {% include "device-example.html" %}
-      {% for device in device_names %}
+      {% for client in clients %}
+      {% let device = client.device_info.clone() %}
       {% include "device.html" %}
       {% endfor %}
     </main>

@@ -7,7 +7,7 @@ use std::time::Duration;
 use pdtcore::*;
 use tracing::{info, instrument, warn};
 use tracing_subscriber::filter::LevelFilter;
-use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, Registry};
 
 #[derive(Debug)]
@@ -56,15 +56,6 @@ impl Client {
 
         match message {
             Message::Server(_) => unreachable!(),
-            Message::Common(message) => match message {
-                CommonMessage::End => {
-                    self.request_shutdown();
-
-                    info!("ending");
-                    self.end()?;
-                    return Ok(false);
-                }
-            },
             Message::Client(action) => match action {
                 ClientMessage::ScreenOff => {
                     Command::new("xset")
@@ -74,8 +65,28 @@ impl Client {
                         .wait()
                         .map_err(ClientError::Command)?;
                 }
+                ClientMessage::ScreenOn => {
+                    Command::new("xset")
+                        .args(["dpms", "force", "on"])
+                        .spawn()
+                        .map_err(ClientError::Command)?
+                        .wait()
+                        .map_err(ClientError::Command)?;
+                }
                 ClientMessage::PowerOff => todo!(),
                 ClientMessage::Restart => todo!(),
+                ClientMessage::Goodbye => {
+                    self.request_shutdown();
+
+                    info!("ending");
+                    self.end()?;
+                    return Ok(false);
+                }
+                ClientMessage::RequestDeviceInfo => {
+                    Message::from(ServerMessage::DeviceInfo(device_info()))
+                        .send(&mut self.tcp_stream)
+                        .map_err(ClientError::Send)?;
+                }
             },
         };
 
@@ -97,10 +108,6 @@ impl Client {
 
     #[instrument(skip_all)]
     fn end(&mut self) -> Result<(), ClientError> {
-        Message::from(CommonMessage::End)
-            .send(&mut self.tcp_stream)
-            .map_err(ClientError::Send)?;
-
         self.tcp_stream
             .shutdown(std::net::Shutdown::Both)
             .map_err(ClientError::Shutdown)?;
@@ -110,11 +117,12 @@ impl Client {
 
     #[instrument(skip_all)]
     fn introduction(&mut self) -> Result<(), ClientError> {
-        let device_info = pdtcore::DeviceInfo {
+        let device_info = pdtcore::ClientIntroduction {
             name: String::from("ASH"),
+            pdtcore_built_info: BuiltInfo::default(),
         };
 
-        Message::from(ServerMessage::Introduction(device_info))
+        Message::from(ServerMessage::Hello(Box::new(device_info)))
             .send(&mut self.tcp_stream)
             .map_err(ClientError::Send)?;
 
@@ -221,5 +229,23 @@ fn main() {
     match client.run() {
         Ok(_) => info!("goodbye"),
         Err(error) => warn!(error =? error, "exited"),
+    }
+}
+
+fn device_info() -> DeviceInfo {
+    use humantime::format_duration;
+    use nix::sys::sysinfo::sysinfo;
+    use nix::sys::utsname::uname;
+
+    let uts_name = uname().unwrap();
+    let sys_info = sysinfo().unwrap();
+    let uptime = sys_info.uptime();
+    let formatted_uptime = format_duration(uptime);
+
+    DeviceInfo {
+        name: uts_name.nodename().to_string_lossy().to_string(),
+        os: uts_name.sysname().to_string_lossy().to_string(),
+        os_version: uts_name.release().to_string_lossy().to_string(),
+        uptime: formatted_uptime.to_string(),
     }
 }
